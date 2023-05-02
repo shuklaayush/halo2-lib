@@ -15,8 +15,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 log = "0.4"
 
+# Use shuklaayush fork of axiom's halo2
+halo2_proofs_axiom = { git = "https://github.com/shuklaayush/halo2.git", branch = "feat/ed25519", package = "halo2_proofs", optional = true }
 # Use Axiom's custom halo2 monorepo for faster proving when feature = "halo2-axiom" is on
-halo2_proofs_axiom = { git = "https://github.com/axiom-crypto/halo2.git", tag = "v2023_04_06", package = "halo2_proofs", optional = true }
+# halo2_proofs_axiom = { git = "https://github.com/axiom-crypto/halo2.git", tag = "v2023_04_06", package = "halo2_proofs", optional = true }
 # Use PSE halo2 and halo2curves for compatibility when feature = "halo2-pse" is on
 halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2.git", tag = "v2023_02_02", optional = true }
 

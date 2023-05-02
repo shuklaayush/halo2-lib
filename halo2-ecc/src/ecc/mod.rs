@@ -15,11 +15,14 @@ use rand_chacha::ChaCha20Rng;
 use std::marker::PhantomData;
 
 pub mod ecdsa;
+// pub mod eddsa;
+pub mod edwards;
 pub mod fixed_base;
 // pub mod fixed_base_pippenger;
 pub mod pippenger;
 
 // EcPoint and EccChip take in a generic `FieldChip` to implement generic elliptic curve operations on arbitrary field extensions (provided chip exists) for short Weierstrass curves (currently further assuming a4 = 0 for optimization purposes)
+// i.e. y^2 = x^3 + b
 #[derive(Debug)]
 pub struct EcPoint<F: PrimeField, FieldPoint> {
     pub x: FieldPoint,
