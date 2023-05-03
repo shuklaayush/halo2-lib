@@ -15,7 +15,7 @@ use rand_chacha::ChaCha20Rng;
 use std::marker::PhantomData;
 
 pub mod ecdsa;
-// pub mod eddsa;
+pub mod eddsa;
 pub mod edwards;
 pub mod fixed_base;
 // pub mod fixed_base_pippenger;

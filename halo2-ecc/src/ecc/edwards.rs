@@ -5,15 +5,21 @@ use crate::halo2_proofs::arithmetic::CurveAffine;
 
 use group::{Curve, Group};
 use halo2_base::gates::builder::GateThreadBuilder;
+
 use halo2_base::{
     gates::{GateInstructions, RangeInstructions},
-    utils::{modulus, CurveAffineExt},
+    utils::{fe_to_biguint, modulus, CurveAffineExt},
     AssignedValue, Context,
 };
 use itertools::Itertools;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use std::marker::PhantomData;
+use std::cmp::min;
+use crate::{
+    bigint::{FixedCRTInteger},
+};
+
 
 // Ed25519Point and EccChip take in a generic `FieldChip` to implement generic elliptic curve operations on arbitrary field extensions (provided chip exists) for twisted Edwards curves
 // i.e. a.x^2 + y^2 = 1 + d.x^2.y^2
@@ -49,7 +55,7 @@ impl<F: PrimeField, FieldPoint> Ed25519Point<F, FieldPoint> {
 //  Find ec addition P + Q = (x_3, y_3)
 // By solving:
 //  x_3 = (x_1 * y_2 + y_1 * x_2) / (1 + d * x_1 * x_2 * y_1 * y_2)
-//  y_3 = (y_1 * y_2 - x_1 * x_2) / (1 - d * x_1 * x_2 * y_1 * y_2)
+//  y_3 = (y_1 * y_2 + x_1 * x_2) / (1 - d * x_1 * x_2 * y_1 * y_2)
 // Where d is a constant specific to the twisted Edwards curve (Ed25519)
 pub fn ec_add<F, FC, C>(
     chip: &FC,
@@ -67,7 +73,7 @@ where
 
     // x3 = (x1 * y2 + y1 * x2) / (1 + d * x1 * x2 * y1 * y2)
     let x1_y2 = chip.mul(ctx, &P.x, &Q.y);
-    let y1_x2= chip.mul(ctx, &P.y, &Q.x);
+    let y1_x2 = chip.mul(ctx, &P.y, &Q.x);
     let x1_x2_y1_y2 = chip.mul(ctx, &x1_y2, &y1_x2);
     let d_x1_x2_y1_y2 = chip.mul(ctx, &d, &x1_x2_y1_y2);
 
@@ -118,44 +124,50 @@ where
     let numerator_y = chip.add_no_carry(ctx, &y1_2, &x1_2);
     let denominator_y = chip.sub_no_carry(ctx, &one, &d_x1_y1_2);
 
-    let y_3= chip.divide(ctx, &numerator_y, &denominator_y);
+    let y_3 = chip.divide(ctx, &numerator_y, &denominator_y);
 
     Ed25519Point::construct(x_3, y_3)
 }
 
-/*
 // Implements:
 //  Given P = (x_1, y_1) and Q = (x_2, y_2), ecc points over the twisted Edwards curve (Ed25519) in the field F_p
-//  Find ec subtraction P - Q = (x_3, y_3)
+//  Find ec addition P - Q = (x_3, y_3)
 // By solving:
-//  x_3 = (x_1 * y_2 - y_1 * x_2) / (1 + d * x_1 * x_2 * y_1 * y_2)
-//  y_3 = (y_1 * y_2 + x_1 * x_2) / (1 - d * x_1 * x_2 * y_1 * y_2)
+//  x_3 = (x_1 * y_2 - y_1 * x_2) / (1 - d * x_1 * x_2 * y_1 * y_2)
+//  y_3 = (y_1 * y_2 - x_1 * x_2) / (1 + d * x_1 * x_2 * y_1 * y_2)
 // Where d is a constant specific to the twisted Edwards curve (Ed25519)
-pub fn edwards_sub<F: PrimeField, FC: FieldChip<F>>(
+pub fn ec_sub<F, FC, C>(
     chip: &FC,
     ctx: &mut Context<F>,
     P: &Ed25519Point<F, FC::FieldPoint>,
     Q: &Ed25519Point<F, FC::FieldPoint>,
-) -> Ed25519Point<F, FC::FieldPoint> {
-    let d = FC::fe_to_constant(C::d()); // The d constant of Ed25519 curve
+) -> Ed25519Point<F, FC::FieldPoint>
+where
+    F: PrimeField,
+    FC: FieldChip<F>,
+    C: CurveAffine<Base = FC::FieldType>,
+{
+    let d = chip.load_constant(ctx, FC::fe_to_constant(C::b()));
+    let one = chip.load_constant(ctx, FC::fe_to_constant(FC::FieldType::one()));
 
-    // Create a constant FieldPoint with value F::one()
-    let one_fp = chip.constant(ctx, F::one());
+    // x3 = (x1 * y2 + y1 * x2) / (1 + d * x1 * x2 * y1 * y2)
+    let x1_y2 = chip.mul(ctx, &P.x, &Q.y);
+    let y1_x2 = chip.mul(ctx, &P.y, &Q.x);
+    let x1_x2_y1_y2 = chip.mul(ctx, &x1_y2, &y1_x2);
+    let d_x1_x2_y1_y2 = chip.mul(ctx, &d, &x1_x2_y1_y2);
 
-    // x3 = (x1 * y2 - y1 * x2) / (1 + d * x1 * x2 * y1 * y2)
-    let x1_y2 = chip.mul_no_carry(ctx, &P.x, &Q.y);
-    let y1_x2 = chip.mul_no_carry(ctx, &P.y, &Q.x);
-    let x1_x2_y1_y2 = chip.mul_no_carry(ctx, &x1_y2, &y1_x2);
-    let d_x1_x2_y1_y2 = chip.mul_no_carry(ctx, &d, &x1_x2_y1_y2);
-    let denominator_x = chip.add_no_carry(ctx, &one_fp, &d_x1_x2_y1_y2);
+    let denominator_x = chip.sub_no_carry(ctx, &one, &d_x1_x2_y1_y2);
     let numerator_x = chip.sub_no_carry(ctx, &x1_y2, &y1_x2);
+
     let x_3 = chip.divide(ctx, &numerator_x, &denominator_x);
 
     // y3 = (y1 * y2 + x1 * x2) / (1 - d * x1 * x2 * y1 * y2)
-    let y1_y2 = chip.mul_no_carry(ctx, &P.y, &Q.y);
-    let x1_x2 = chip.mul_no_carry(ctx, &P.x, &Q.x);
-    let numerator_y = chip.add_no_carry(ctx, &y1_y2, &x1_x2);
-    let denominator_y = chip.sub_no_carry(ctx, &one_fp, &d_x1_x2_y1_y2);
+    let y1_y2 = chip.mul(ctx, &P.y, &Q.y);
+    let x1_x2 = chip.mul(ctx, &P.x, &Q.x);
+
+    let numerator_y = chip.sub_no_carry(ctx, &y1_y2, &x1_x2);
+    let denominator_y = chip.add_no_carry(ctx, &one, &d_x1_x2_y1_y2);
+
     let y_3 = chip.divide(ctx, &numerator_y, &denominator_y);
 
     Ed25519Point::construct(x_3, y_3)
@@ -219,7 +231,7 @@ where
 // - `scalar_i < 2^{max_bits} for all i` (constrained by num_to_bits)
 // - `max_bits <= modulus::<F>.bits()`
 //   * P has order given by the scalar field modulus
-pub fn scalar_multiply<F: PrimeField, FC>(
+pub fn scalar_multiply<F: PrimeField, FC, C>(
     chip: &FC,
     ctx: &mut Context<F>,
     P: &Ed25519Point<F, FC::FieldPoint>,
@@ -229,6 +241,7 @@ pub fn scalar_multiply<F: PrimeField, FC>(
 ) -> Ed25519Point<F, FC::FieldPoint>
 where
     FC: FieldChip<F> + Selectable<F, Point = FC::FieldPoint>,
+    C: CurveAffine<Base = FC::FieldType>,
 {
     assert!(!scalar.is_empty());
     assert!((max_bits as u64) <= modulus::<F>().bits());
@@ -273,10 +286,10 @@ where
     cached_points.push(P.clone());
     for idx in 2..cache_size {
         if idx == 2 {
-            let double = ec_double(chip, ctx, P /*, b*/);
+            let double = ec_double::<F, FC, C>(chip, ctx, P /*, b*/);
             cached_points.push(double);
         } else {
-            let new_point = ec_add_unequal(chip, ctx, &cached_points[idx - 1], P, false);
+            let new_point = ec_add::<F, FC, C>(chip, ctx, &cached_points[idx - 1], P);
             cached_points.push(new_point);
         }
     }
@@ -292,7 +305,7 @@ where
     for idx in 1..num_windows {
         let mut mult_point = curr_point.clone();
         for _ in 0..window_bits {
-            mult_point = ec_double(chip, ctx, &mult_point);
+            mult_point = ec_double::<F, FC, C>(chip, ctx, &mult_point);
         }
         let add_point = ec_select_from_bits::<F, FC>(
             chip,
@@ -301,7 +314,7 @@ where
             &rounded_bits
                 [rounded_bitlen - window_bits * (idx + 1)..rounded_bitlen - window_bits * idx],
         );
-        let mult_and_add = ec_add_unequal(chip, ctx, &mult_point, &add_point, false);
+        let mult_and_add = ec_add::<F, FC, C>(chip, ctx, &mult_point, &add_point);
         let is_started_point =
             ec_select(chip, ctx, &mult_point, &mult_and_add, is_zero_window[idx]);
 
@@ -311,6 +324,138 @@ where
     curr_point
 }
 
+// this only works for curves GA with base field of prime order
+#[derive(Clone, Debug)]
+pub struct FixedEd25519Point<F: PrimeField, C: CurveAffine> {
+    pub x: FixedCRTInteger<F>, // limbs in `F` and value in `BigUint`
+    pub y: FixedCRTInteger<F>,
+    _marker: PhantomData<C>,
+}
+
+impl<F: PrimeField, C: CurveAffineExt> FixedEd25519Point<F, C>
+where
+    C::Base: PrimeField,
+{
+    pub fn construct(x: FixedCRTInteger<F>, y: FixedCRTInteger<F>) -> Self {
+        Self { x, y, _marker: PhantomData }
+    }
+
+    pub fn from_curve(point: C, num_limbs: usize, limb_bits: usize) -> Self {
+        let (x, y) = point.into_coordinates();
+        let x = FixedCRTInteger::from_native(fe_to_biguint(&x), num_limbs, limb_bits);
+        let y = FixedCRTInteger::from_native(fe_to_biguint(&y), num_limbs, limb_bits);
+        Self::construct(x, y)
+    }
+
+    pub fn assign<FC>(self, chip: &FC, ctx: &mut Context<F>) -> Ed25519Point<F, FC::FieldPoint>
+    where
+        FC: PrimeFieldChip<F, FieldType = C::Base, FieldPoint = CRTInteger<F>>,
+    {
+        let assigned_x = self.x.assign(ctx, chip.limb_bits(), chip.native_modulus());
+        let assigned_y = self.y.assign(ctx, chip.limb_bits(), chip.native_modulus());
+        Ed25519Point::construct(assigned_x, assigned_y)
+    }
+}
+
+// computes `[scalar] * P` on y^2 = x^3 + b where `P` is fixed (constant)
+// - `scalar` is represented as a reference array of `AssignedCell`s
+// - `scalar = sum_i scalar_i * 2^{max_bits * i}`
+// - an array of length > 1 is needed when `scalar` exceeds the modulus of scalar field `F`
+// assumes:
+// - `scalar_i < 2^{max_bits} for all i` (constrained by num_to_bits)
+// - `max_bits <= modulus::<F>.bits()`
+pub fn fixed_base_scalar_multiply<F, FC, C>(
+    chip: &FC,
+    ctx: &mut Context<F>,
+    point: &C,
+    scalar: Vec<AssignedValue<F>>,
+    max_bits: usize,
+    window_bits: usize,
+) -> Ed25519Point<F, FC::FieldPoint>
+where
+    F: PrimeField,
+    C: CurveAffineExt,
+    C::Base: PrimeField,
+    FC: PrimeFieldChip<F, FieldType = C::Base, FieldPoint = CRTInteger<F>>
+        + Selectable<F, Point = FC::FieldPoint>,
+{
+    if point.is_identity().into() {
+        let point = FixedEd25519Point::from_curve(*point, chip.num_limbs(), chip.limb_bits());
+        return FixedEd25519Point::assign(point, chip, ctx);
+    }
+    debug_assert!(!scalar.is_empty());
+    debug_assert!((max_bits as u32) <= F::NUM_BITS);
+
+    let total_bits = max_bits * scalar.len();
+    let num_windows = (total_bits + window_bits - 1) / window_bits;
+
+    // Jacobian coordinate
+    let base_pt = point.to_curve();
+    // cached_points[i * 2^w + j] holds `[j * 2^(i * w)] * point` for j in {0, ..., 2^w - 1}
+
+    // first we compute all cached points in Jacobian coordinates since it's fastest
+    let mut increment = base_pt;
+    let cached_points_jacobian = (0..num_windows)
+        .flat_map(|i| {
+            let mut curr = increment;
+            // start with increment at index 0 instead of identity just as a dummy value to avoid divide by 0 issues
+            let cache_vec = std::iter::once(increment)
+                .chain((1..(1usize << min(window_bits, total_bits - i * window_bits))).map(|_| {
+                    let prev = curr;
+                    curr += increment;
+                    prev
+                }))
+                .collect::<Vec<_>>();
+            increment = curr;
+            cache_vec
+        })
+        .collect::<Vec<_>>();
+    // for use in circuits we need affine coordinates, so we do a batch normalize: this is much more efficient than calling `to_affine` one by one since field inversion is very expensive
+    // initialize to all 0s
+    let mut cached_points_affine = vec![C::default(); cached_points_jacobian.len()];
+    C::Curve::batch_normalize(&cached_points_jacobian, &mut cached_points_affine);
+
+    // TODO: do not assign and use select_from_bits on Constant(_) QuantumCells
+    let cached_points = cached_points_affine
+        .into_iter()
+        .map(|point| {
+            let point = FixedEd25519Point::from_curve(point, chip.num_limbs(), chip.limb_bits());
+            FixedEd25519Point::assign(point, chip, ctx)
+        })
+        .collect_vec();
+
+    let bits = scalar
+        .into_iter()
+        .flat_map(|scalar_chunk| chip.gate().num_to_bits(ctx, scalar_chunk, max_bits))
+        .collect::<Vec<_>>();
+
+    let cached_point_window_rev = cached_points.chunks(1usize << window_bits).rev();
+    let bit_window_rev = bits.chunks(window_bits).rev();
+    let mut curr_point = None;
+    // `is_started` is just a way to deal with if `curr_point` is actually identity
+    let mut is_started = ctx.load_zero();
+    for (cached_point_window, bit_window) in cached_point_window_rev.zip(bit_window_rev) {
+        let bit_sum = chip.gate().sum(ctx, bit_window.iter().copied());
+        // are we just adding a window of all 0s? if so, skip
+        let is_zero_window = chip.gate().is_zero(ctx, bit_sum);
+        let add_point = ec_select_from_bits::<F, _>(chip, ctx, cached_point_window, bit_window);
+        curr_point = if let Some(curr_point) = curr_point {
+            let sum = ec_add::<F, FC, C>(chip, ctx, &curr_point, &add_point);
+            let zero_sum = ec_select(chip, ctx, &curr_point, &sum, is_zero_window);
+            Some(ec_select(chip, ctx, &zero_sum, &add_point, is_started))
+        } else {
+            Some(add_point)
+        };
+        is_started = {
+            // is_started || !is_zero_window
+            // (a || !b) = (1-b) + a*b
+            let not_zero_window = chip.gate().not(ctx, is_zero_window);
+            chip.gate().mul_add(ctx, is_started, is_zero_window, not_zero_window)
+        };
+    }
+    curr_point.unwrap()
+}
+/*
 pub fn is_on_curve<F, FC>(chip: &FC, ctx: &mut Context<F>, P: &Ed25519Point<F, FC::FieldPoint>)
 where
     F: PrimeField,
@@ -426,6 +571,18 @@ impl<'chip, F: PrimeField, FC: FieldChip<F>> EccChip<'chip, F, FC> {
         ec_double::<F, FC, C>(self.field_chip, ctx, P)
     }
 
+    pub fn is_equal(
+        &self,
+        ctx: &mut Context<F>,
+        P: &Ed25519Point<F, FC::FieldPoint>,
+        Q: &Ed25519Point<F, FC::FieldPoint>,
+    ) -> AssignedValue<F> {
+        // TODO: optimize
+        let x_is_equal = self.field_chip.is_equal(ctx, &P.x, &Q.x);
+        let y_is_equal = self.field_chip.is_equal(ctx, &P.y, &Q.y);
+        self.field_chip.range().gate().and(ctx, x_is_equal, y_is_equal)
+    }
+
     /*
     /// Does not constrain witness to lie on curve
     pub fn assign_point<C>(&self, ctx: &mut Context<F>, g: C) -> Ed25519Point<F, FC::FieldPoint>
@@ -510,18 +667,6 @@ impl<'chip, F: PrimeField, FC: FieldChip<F>> EccChip<'chip, F, FC> {
         is_strict: bool,
     ) -> Ed25519Point<F, FC::FieldPoint> {
         ec_sub_unequal(self.field_chip, ctx, P, Q, is_strict)
-    }
-
-    pub fn is_equal(
-        &self,
-        ctx: &mut Context<F>,
-        P: &Ed25519Point<F, FC::FieldPoint>,
-        Q: &Ed25519Point<F, FC::FieldPoint>,
-    ) -> AssignedValue<F> {
-        // TODO: optimize
-        let x_is_equal = self.field_chip.is_equal(ctx, &P.x, &Q.x);
-        let y_is_equal = self.field_chip.is_equal(ctx, &P.y, &Q.y);
-        self.field_chip.range().gate().and(ctx, x_is_equal, y_is_equal)
     }
 
     pub fn assert_equal(
