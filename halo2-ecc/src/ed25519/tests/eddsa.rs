@@ -1,10 +1,11 @@
 #![allow(non_snake_case)]
+use crate::ed25519::{FpChip, FqChip};
 use crate::fields::FpStrategy;
 use crate::halo2_proofs::{
     arithmetic::CurveAffine,
     dev::MockProver,
     halo2curves::bn256::{Bn256, Fr as Fs, G1Affine},
-    halo2curves::ed25519::{Fq, Fr, Ed25519Affine},
+    halo2curves::ed25519::{Ed25519Affine, Fq, Fr},
     plonk::*,
     poly::commitment::ParamsProver,
     transcript::{Blake2bRead, Blake2bWrite, Challenge255},
@@ -17,9 +18,11 @@ use crate::halo2_proofs::{
     },
     transcript::{TranscriptReadBuffer, TranscriptWriterBuffer},
 };
-use crate::ed25519::{FpChip, FqChip};
 use crate::{
-    ecc::{eddsa::eddsa_verify, edwards::{Ed25519Point, EccChip}},
+    ecc::{
+        eddsa::eddsa_verify,
+        edwards::{EccChip, Ed25519Point},
+    },
     fields::{FieldChip, PrimeField},
 };
 use ark_std::{end_timer, start_timer};
@@ -30,8 +33,8 @@ use halo2_base::gates::RangeChip;
 use halo2_base::utils::fs::gen_srs;
 use halo2_base::utils::{biguint_to_fe, fe_to_biguint, modulus};
 use halo2_base::Context;
-use rand_core::OsRng;
 use rand::RngCore;
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufReader;
@@ -63,18 +66,14 @@ fn eddsa_test<F: PrimeField>(
     let fp_chip = FpChip::<F>::new(&range, params.limb_bits, params.num_limbs);
     let fq_chip = FqChip::<F>::new(&range, params.limb_bits, params.num_limbs);
 
-    let [m, s] =
-        [msghash, s].map(|x| fq_chip.load_private(ctx, FqChip::<F>::fe_to_witness(&x)));
-    let [Rx, Ry] =
-        [R.x, R.y].map(|x| fq_chip.load_private(ctx, FpChip::<F>::fe_to_witness(&x)));
+    let [m, s] = [msghash, s].map(|x| fq_chip.load_private(ctx, FqChip::<F>::fe_to_witness(&x)));
+    let [Rx, Ry] = [R.x, R.y].map(|x| fq_chip.load_private(ctx, FpChip::<F>::fe_to_witness(&x)));
     let R = Ed25519Point::construct(Rx, Ry);
 
     let ecc_chip = EccChip::<F, FpChip<F>>::new(&fp_chip);
     let pk = ecc_chip.load_private(ctx, (pk.x, pk.y));
     // test EdDSA
-    let res = eddsa_verify::<F, Fq, Fr, Ed25519Affine>(
-        &fp_chip, ctx, &pk, &R, &s, &m, 4, 4,
-    );
+    let res = eddsa_verify::<F, Fq, Fr, Ed25519Affine>(&fp_chip, ctx, &pk, &R, &s, &m, 4, 4);
     assert_eq!(res.value(), &F::one());
 }
 
@@ -134,12 +133,7 @@ fn random_eddsa_circuit(
 
         let R_bytes = Ed25519Affine::from(Ed25519Affine::generator() * &r).to_bytes();
 
-        let k = hash_to_fr(
-            Sha512::default()
-                .chain(&R_bytes[..])
-                .chain(&A_bytes[..])
-                .chain(msg),
-        );
+        let k = hash_to_fr(Sha512::default().chain(&R_bytes[..]).chain(&A_bytes[..]).chain(msg));
 
         let s_bytes = (r + s * k).to_bytes();
 
@@ -165,12 +159,7 @@ fn random_eddsa_circuit(
     let (R_bytes, s_bytes) = sign(s, prefix, A_bytes, msg);
 
     // TODO: Rename
-    let msg_hash = hash_to_fr(
-        Sha512::default()
-            .chain(&R_bytes[..])
-            .chain(&A_bytes[..])
-            .chain(msg),
-    );
+    let msg_hash = hash_to_fr(Sha512::default().chain(&R_bytes[..]).chain(&A_bytes[..]).chain(msg));
 
     let R = Ed25519Affine::from_bytes(R_bytes).unwrap();
     let s = Fr::from_bytes(&s_bytes).unwrap();

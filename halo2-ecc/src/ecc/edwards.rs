@@ -6,6 +6,7 @@ use crate::halo2_proofs::arithmetic::CurveAffine;
 use group::{Curve, Group};
 use halo2_base::gates::builder::GateThreadBuilder;
 
+use crate::bigint::FixedCRTInteger;
 use halo2_base::{
     gates::{GateInstructions, RangeInstructions},
     utils::{fe_to_biguint, modulus, CurveAffineExt},
@@ -14,12 +15,8 @@ use halo2_base::{
 use itertools::Itertools;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
-use std::marker::PhantomData;
 use std::cmp::min;
-use crate::{
-    bigint::{FixedCRTInteger},
-};
-
+use std::marker::PhantomData;
 
 // Ed25519Point and EccChip take in a generic `FieldChip` to implement generic elliptic curve operations on arbitrary field extensions (provided chip exists) for twisted Edwards curves
 // i.e. a.x^2 + y^2 = 1 + d.x^2.y^2
