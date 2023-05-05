@@ -16,7 +16,7 @@ use super::edwards::{ec_sub, fixed_base_scalar_multiply, scalar_multiply, Ed2551
 pub fn eddsa_verify<F: PrimeField, CF: PrimeField, SF: PrimeField, GA>(
     base_chip: &FpChip<F, CF>,
     ctx: &mut Context<F>,
-    pubkey: &Ed25519Point<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>,
+    pubkey: &Ed25519Point<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>, // A
     R: &Ed25519Point<F, <FpChip<F, CF> as FieldChip<F>>::FieldPoint>,
     s: &CRTInteger<F>,
     msghash: &CRTInteger<F>,
@@ -32,7 +32,6 @@ where
     // Check s < L
     scalar_chip.enforce_less_than_p(ctx, s);
 
-    let A = pubkey;
     // Compute h = H(R || A || M)
     let k = msghash;
 

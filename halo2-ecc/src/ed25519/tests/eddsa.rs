@@ -194,3 +194,102 @@ fn test_ed25519_eddsa() {
     let circuit = random_eddsa_circuit(params, CircuitBuilderStage::Mock, None);
     MockProver::run(params.degree, &circuit, vec![]).unwrap().assert_satisfied();
 }
+
+#[test]
+fn bench_ed25519_eddsa() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rng = OsRng;
+    let config_path = "configs/ed25519/bench_eddsa.config";
+    let bench_params_file =
+        File::open(config_path).unwrap_or_else(|e| panic!("{config_path} does not exist: {e:?}"));
+    fs::create_dir_all("results/ed25519").unwrap();
+    fs::create_dir_all("data").unwrap();
+    let results_path = "results/ed25519/eddsa_bench.csv";
+    let mut fs_results = File::create(results_path).unwrap();
+    writeln!(fs_results, "degree,num_advice,num_lookup,num_fixed,lookup_bits,limb_bits,num_limbs,proof_time,proof_size,verify_time")?;
+
+    let bench_params_reader = BufReader::new(bench_params_file);
+    for line in bench_params_reader.lines() {
+        let bench_params: CircuitParams = serde_json::from_str(line.unwrap().as_str()).unwrap();
+        let k = bench_params.degree;
+        println!("---------------------- degree = {k} ------------------------------",);
+
+        let params = gen_srs(k);
+        println!("{bench_params:?}");
+
+        let circuit = random_eddsa_circuit(bench_params, CircuitBuilderStage::Keygen, None);
+
+        let vk_time = start_timer!(|| "Generating vkey");
+        let vk = keygen_vk(&params, &circuit)?;
+        end_timer!(vk_time);
+
+        let pk_time = start_timer!(|| "Generating pkey");
+        let pk = keygen_pk(&params, vk, &circuit)?;
+        end_timer!(pk_time);
+
+        let break_points = circuit.0.break_points.take();
+        drop(circuit);
+        // create a proof
+        let proof_time = start_timer!(|| "Proving time");
+        let circuit =
+            random_eddsa_circuit(bench_params, CircuitBuilderStage::Prover, Some(break_points));
+        let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+        create_proof::<
+            KZGCommitmentScheme<Bn256>,
+            ProverSHPLONK<'_, Bn256>,
+            Challenge255<G1Affine>,
+            _,
+            Blake2bWrite<Vec<u8>, G1Affine, Challenge255<G1Affine>>,
+            _,
+        >(&params, &pk, &[circuit], &[&[]], &mut rng, &mut transcript)?;
+        let proof = transcript.finalize();
+        end_timer!(proof_time);
+
+        let proof_size = {
+            let path = format!(
+                "data/eddsa_circuit_proof_{}_{}_{}_{}_{}_{}_{}.data",
+                bench_params.degree,
+                bench_params.num_advice,
+                bench_params.num_lookup_advice,
+                bench_params.num_fixed,
+                bench_params.lookup_bits,
+                bench_params.limb_bits,
+                bench_params.num_limbs
+            );
+            let mut fd = File::create(&path)?;
+            fd.write_all(&proof)?;
+            let size = fd.metadata().unwrap().len();
+            fs::remove_file(path)?;
+            size
+        };
+
+        let verify_time = start_timer!(|| "Verify time");
+        let verifier_params = params.verifier_params();
+        let strategy = SingleStrategy::new(&params);
+        let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
+        verify_proof::<
+            KZGCommitmentScheme<Bn256>,
+            VerifierSHPLONK<'_, Bn256>,
+            Challenge255<G1Affine>,
+            Blake2bRead<&[u8], G1Affine, Challenge255<G1Affine>>,
+            SingleStrategy<'_, Bn256>,
+        >(verifier_params, pk.get_vk(), strategy, &[&[]], &mut transcript)
+        .unwrap();
+        end_timer!(verify_time);
+
+        writeln!(
+            fs_results,
+            "{},{},{},{},{},{},{},{:?},{},{:?}",
+            bench_params.degree,
+            bench_params.num_advice,
+            bench_params.num_lookup_advice,
+            bench_params.num_fixed,
+            bench_params.lookup_bits,
+            bench_params.limb_bits,
+            bench_params.num_limbs,
+            proof_time.time.elapsed(),
+            proof_size,
+            verify_time.time.elapsed()
+        )?;
+    }
+    Ok(())
+}
